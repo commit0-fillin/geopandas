@@ -92,8 +92,58 @@ def geopandas_to_arrow(df, index=None, geometry_encoding='WKB', interleaved=True
         empty geometries (for a guaranteed result, it is recommended to
         specify the keyword).
 
+    Returns
+    -------
+    pyarrow.Table
+        The converted Arrow table.
     """
-    pass
+    import pyarrow as pa
+    from pyarrow import geoarrow
+
+    if geometry_encoding not in ['WKB', 'geoarrow']:
+        raise ValueError("geometry_encoding must be either 'WKB' or 'geoarrow'")
+
+    # Convert non-geometry columns to Arrow arrays
+    arrays = []
+    names = []
+    for column_name, column in df.items():
+        if column_name != df._geometry_column_name:
+            arrays.append(pa.array(column))
+            names.append(column_name)
+
+    # Convert geometry column
+    geometry_column = df.geometry.values
+    if geometry_encoding == 'WKB':
+        geometry_array = pa.array(geometry_column.to_wkb())
+    else:  # geoarrow encoding
+        geometry_array = geoarrow.array(geometry_column, interleaved=interleaved, include_z=include_z)
+
+    arrays.append(geometry_array)
+    names.append(df._geometry_column_name)
+
+    # Handle index
+    if index is None:
+        index = not isinstance(df.index, pd.RangeIndex)
+    if index:
+        if isinstance(df.index, pd.MultiIndex):
+            for i, name in enumerate(df.index.names):
+                arrays.insert(i, pa.array(df.index.get_level_values(i)))
+                names.insert(i, name if name is not None else f'level_{i}')
+        else:
+            arrays.insert(0, pa.array(df.index))
+            names.insert(0, df.index.name if df.index.name is not None else 'index')
+
+    # Create Arrow table
+    table = pa.Table.from_arrays(arrays, names=names)
+
+    # Add CRS as metadata
+    if df.crs:
+        table = table.replace_schema_metadata({
+            **table.schema.metadata,
+            'geo': json.dumps({'crs': df.crs.to_wkt()})
+        })
+
+    return table
 
 def arrow_to_geopandas(table, geometry=None):
     """
@@ -112,7 +162,38 @@ def arrow_to_geopandas(table, geometry=None):
     GeoDataFrame
 
     """
-    pass
+    import pyarrow as pa
+    from pyarrow import geoarrow
+    from geopandas import GeoDataFrame
+
+    # Convert Arrow table to pandas DataFrame
+    df = table.to_pandas()
+
+    # Find geometry column
+    if geometry is None:
+        geometry_columns = [
+            name for name, field in zip(table.column_names, table.schema)
+            if geoarrow.is_geoarrow(field.type)
+        ]
+        if not geometry_columns:
+            raise ValueError("No geometry column found in the Arrow table.")
+        geometry = geometry_columns[0]
+    elif geometry not in table.column_names:
+        raise ValueError(f"Specified geometry column '{geometry}' not found in the Arrow table.")
+
+    # Convert geometry column to GeometryArray
+    geometry_array = arrow_to_geometry_array(table[geometry])
+
+    # Create GeoDataFrame
+    gdf = GeoDataFrame(df, geometry=geometry_array, crs=None)
+
+    # Set CRS if available in metadata
+    if table.schema.metadata and b'geo' in table.schema.metadata:
+        geo_metadata = json.loads(table.schema.metadata[b'geo'])
+        if 'crs' in geo_metadata:
+            gdf.set_crs(geo_metadata['crs'], inplace=True)
+
+    return gdf
 
 def arrow_to_geometry_array(arr):
     """
@@ -121,7 +202,21 @@ def arrow_to_geometry_array(arr):
 
     Specifically for GeoSeries.from_arrow.
     """
-    pass
+    import pyarrow as pa
+    from pyarrow import geoarrow
+    from geopandas.array import from_shapely
+
+    if not geoarrow.is_geoarrow(arr.type):
+        raise ValueError("Input array is not a GeoArrow array")
+
+    # Convert GeoArrow array to WKB
+    wkb_array = geoarrow.to_wkb(arr)
+
+    # Convert WKB to shapely geometries
+    shapely_geoms = shapely.from_wkb(wkb_array.to_numpy())
+
+    # Create GeometryArray
+    return from_shapely(shapely_geoms)
 
 def construct_shapely_array(arr: pa.Array, extension_name: str):
     """
@@ -129,4 +224,19 @@ def construct_shapely_array(arr: pa.Array, extension_name: str):
     with GeoArrow extension type.
 
     """
-    pass
+    import pyarrow as pa
+    from pyarrow import geoarrow
+    import numpy as np
+    import shapely
+
+    if not geoarrow.is_geoarrow(arr.type):
+        raise ValueError("Input array is not a GeoArrow array")
+
+    # Convert GeoArrow array to WKB
+    wkb_array = geoarrow.to_wkb(arr)
+
+    # Convert WKB to shapely geometries
+    shapely_geoms = shapely.from_wkb(wkb_array.to_numpy())
+
+    # Create NumPy array of shapely geometries
+    return np.array(shapely_geoms, dtype=object)
