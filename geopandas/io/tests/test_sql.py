@@ -26,19 +26,55 @@ def check_available_postgis_drivers() -> list[str]:
     This prevents tests running if the relevant package isn't installed
     (rather than being skipped, as skips are treated as failures during postgis CI)
     """
-    pass
+    available_drivers = []
+    try:
+        import psycopg2
+        available_drivers.append('psycopg2')
+    except ImportError:
+        pass
+    
+    try:
+        import psycopg
+        available_drivers.append('psycopg')
+    except ImportError:
+        pass
+    
+    return available_drivers
 POSTGIS_DRIVERS = check_available_postgis_drivers()
 
 def prepare_database_credentials() -> dict:
     """Gather postgres connection credentials from environment variables."""
-    pass
+    import os
+    
+    credentials = {
+        'host': os.environ.get('POSTGIS_HOST', 'localhost'),
+        'port': os.environ.get('POSTGIS_PORT', '5432'),
+        'user': os.environ.get('POSTGIS_USER', 'postgres'),
+        'password': os.environ.get('POSTGIS_PASSWORD', ''),
+        'dbname': os.environ.get('POSTGIS_DBNAME', 'test_geopandas')
+    }
+    
+    return credentials
 
 @pytest.fixture()
 def connection_postgis(request):
     """Create a postgres connection using either psycopg2 or psycopg.
 
     Use this as an indirect fixture, where the request parameter is POSTGIS_DRIVERS."""
-    pass
+    driver = request.param
+    credentials = prepare_database_credentials()
+    
+    if driver == 'psycopg2':
+        import psycopg2
+        conn = psycopg2.connect(**credentials)
+    elif driver == 'psycopg':
+        import psycopg
+        conn = psycopg.connect(**credentials)
+    else:
+        raise ValueError(f"Unsupported driver: {driver}")
+    
+    yield conn
+    conn.close()
 
 @pytest.fixture()
 def engine_postgis(request):
@@ -47,7 +83,20 @@ def engine_postgis(request):
 
     Use this as an indirect fixture, where the request parameter is POSTGIS_DRIVERS.
     """
-    pass
+    from sqlalchemy import create_engine
+    
+    driver = request.param
+    credentials = prepare_database_credentials()
+    
+    if driver == 'psycopg2':
+        engine = create_engine(f"postgresql+psycopg2://{credentials['user']}:{credentials['password']}@{credentials['host']}:{credentials['port']}/{credentials['dbname']}")
+    elif driver == 'psycopg':
+        engine = create_engine(f"postgresql+psycopg://{credentials['user']}:{credentials['password']}@{credentials['host']}:{credentials['port']}/{credentials['dbname']}")
+    else:
+        raise ValueError(f"Unsupported driver: {driver}")
+    
+    yield engine
+    engine.dispose()
 
 @pytest.fixture()
 def connection_spatialite():
@@ -65,37 +114,93 @@ def connection_spatialite():
     ``AttributeError`` on missing support for loadable SQLite extensions
     ``sqlite3.OperationalError`` on missing SpatiaLite
     """
-    pass
+    import sqlite3
+    
+    conn = sqlite3.connect(':memory:')
+    conn.enable_load_extension(True)
+    
+    try:
+        conn.load_extension("mod_spatialite")
+    except sqlite3.OperationalError:
+        conn.close()
+        raise sqlite3.OperationalError("SpatiaLite extension not found")
+    
+    conn.execute("SELECT InitSpatialMetaData(1)")
+    
+    yield conn
+    conn.close()
 
 class TestIO:
 
     @pytest.mark.parametrize('connection_postgis', POSTGIS_DRIVERS, indirect=True)
     def test_read_postgis_select_geom_as(self, connection_postgis, df_nybb):
         """Tests that a SELECT {geom} AS {some_other_geom} works."""
-        pass
+        from geopandas import read_postgis
+        
+        sql = "SELECT geom AS some_other_geom, boroname FROM nybb"
+        gdf = read_postgis(sql, connection_postgis, geom_col='some_other_geom')
+        
+        assert 'some_other_geom' in gdf.columns
+        assert gdf.geom_type.unique() == ['MultiPolygon']
+        assert len(gdf) == len(df_nybb)
 
     @pytest.mark.parametrize('connection_postgis', POSTGIS_DRIVERS, indirect=True)
     def test_read_postgis_get_srid(self, connection_postgis, df_nybb):
         """Tests that an SRID can be read from a geodatabase (GH #451)."""
-        pass
+        from geopandas import read_postgis
+        
+        sql = "SELECT geom, boroname FROM nybb"
+        gdf = read_postgis(sql, connection_postgis)
+        
+        assert gdf.crs is not None
+        assert gdf.crs.to_epsg() == 4326  # Assuming EPSG:4326 is used in the test database
 
     @pytest.mark.parametrize('connection_postgis', POSTGIS_DRIVERS, indirect=True)
     def test_read_postgis_override_srid(self, connection_postgis, df_nybb):
         """Tests that a user specified CRS overrides the geodatabase SRID."""
-        pass
+        from geopandas import read_postgis
+        
+        sql = "SELECT geom, boroname FROM nybb"
+        user_crs = "EPSG:3857"
+        gdf = read_postgis(sql, connection_postgis, crs=user_crs)
+        
+        assert gdf.crs is not None
+        assert gdf.crs.to_string() == user_crs
 
     def test_read_postgis_null_geom(self, connection_spatialite, df_nybb):
         """Tests that geometry with NULL is accepted."""
-        pass
+        from geopandas import read_postgis
+        
+        # Create a table with a NULL geometry
+        connection_spatialite.execute("CREATE TABLE null_geom (id INTEGER, geom GEOMETRY)")
+        connection_spatialite.execute("INSERT INTO null_geom VALUES (1, NULL)")
+        
+        sql = "SELECT * FROM null_geom"
+        gdf = read_postgis(sql, connection_spatialite)
+        
+        assert len(gdf) == 1
+        assert gdf.iloc[0].geometry is None
 
     def test_read_postgis_binary(self, connection_spatialite, df_nybb):
         """Tests that geometry read as binary is accepted."""
-        pass
+        from geopandas import read_postgis
+        
+        sql = "SELECT ST_AsBinary(geom) AS geom, boroname FROM nybb"
+        gdf = read_postgis(sql, connection_spatialite)
+        
+        assert gdf.geom_type.unique() == ['MultiPolygon']
+        assert len(gdf) == len(df_nybb)
 
     @pytest.mark.parametrize('connection_postgis', POSTGIS_DRIVERS, indirect=True)
     def test_read_postgis_chunksize(self, connection_postgis, df_nybb):
         """Test chunksize argument"""
-        pass
+        from geopandas import read_postgis
+        
+        sql = "SELECT geom, boroname FROM nybb"
+        chunks = list(read_postgis(sql, connection_postgis, chunksize=2))
+        
+        assert len(chunks) == 3  # 5 boroughs / 2 = 3 chunks (2, 2, 1)
+        assert sum(len(chunk) for chunk in chunks) == len(df_nybb)
 
     @pytest.mark.parametrize('engine_postgis', POSTGIS_DRIVERS, indirect=True)
     def test_write_postgis_default(self, engine_postgis, df_nybb):
