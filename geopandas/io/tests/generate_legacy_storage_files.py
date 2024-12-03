@@ -28,6 +28,55 @@ import geopandas
 
 def create_pickle_data():
     """create the pickle data"""
-    pass
+    # Create a sample GeoDataFrame
+    geometry = [Point(x, y) for x, y in zip(range(3), range(3))]
+    df = geopandas.GeoDataFrame(
+        {'id': [1, 2, 3], 'name': ['A', 'B', 'C']},
+        geometry=geometry,
+        crs="EPSG:4326"
+    )
+    
+    # Create a GeoSeries
+    gs = geopandas.GeoSeries(geometry, crs="EPSG:4326")
+    
+    # Return a dictionary of objects to pickle
+    return {
+        'gdf': df,
+        'gs': gs,
+        'geometry_list': geometry,
+        'pandas_dataframe': df.drop(columns=['geometry'])
+    }
+def main():
+    # Check if the correct number of arguments is provided
+    if len(sys.argv) != 3:
+        print("Usage: python generate_legacy_storage_files.py <output_dir> <storage_format>")
+        sys.exit(1)
+
+    output_dir = sys.argv[1]
+    storage_format = sys.argv[2]
+
+    if storage_format != 'pickle':
+        print("Only 'pickle' storage format is currently supported.")
+        sys.exit(1)
+
+    # Create the pickle data
+    data = create_pickle_data()
+
+    # Generate the filename
+    version = geopandas.__version__
+    pf = platform.platform().split('-')[0].lower()
+    arch = platform.machine().lower()
+    filename = f"geopandas-{version}-{pf}-{arch}.{storage_format}"
+    
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Write the pickle file
+    path = os.path.join(output_dir, filename)
+    with open(path, 'wb') as f:
+        pickle.dump(data, f, protocol=4)  # Use protocol 4 for Python 3.4+
+    
+    print(f"Created {path}")
+
 if __name__ == '__main__':
     main()
