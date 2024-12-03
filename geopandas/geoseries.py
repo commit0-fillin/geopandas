@@ -27,11 +27,20 @@ def _geoseries_constructor_with_fallback(data=None, index=None, crs: Optional[An
     to fall back to a Series (if a certain operation does not produce
     geometries)
     """
-    pass
+    try:
+        return GeoSeries(data=data, index=index, crs=crs, **kwargs)
+    except TypeError:
+        return pd.Series(data=data, index=index, **kwargs)
 
 def _expanddim_logic(df):
     """Shared logic for _constructor_expanddim and _constructor_from_mgr_expanddim."""
-    pass
+    from geopandas import GeoDataFrame
+    if isinstance(df, GeoDataFrame):
+        return df
+    elif isinstance(df, pd.DataFrame) and df.shape[1] == 1:
+        return GeoDataFrame(df, geometry=df.iloc[:, 0])
+    else:
+        return GeoDataFrame(df)
 
 class GeoSeries(GeoPandasBase, Series):
     """
@@ -178,7 +187,7 @@ class GeoSeries(GeoPandasBase, Series):
         GeoSeries.z
 
         """
-        pass
+        return Series([geom.x if geom else None for geom in self.geometry], index=self.index)
 
     @property
     def y(self) -> Series:
@@ -206,7 +215,7 @@ class GeoSeries(GeoPandasBase, Series):
         GeoSeries.z
 
         """
-        pass
+        return Series([geom.y if geom else None for geom in self.geometry], index=self.index)
 
     @property
     def z(self) -> Series:
@@ -234,7 +243,7 @@ class GeoSeries(GeoPandasBase, Series):
         GeoSeries.y
 
         """
-        pass
+        return Series([geom.z if geom and hasattr(geom, 'z') else None for geom in self.geometry], index=self.index)
 
     @classmethod
     def from_file(cls, filename: os.PathLike | typing.IO, **kwargs) -> GeoSeries:
