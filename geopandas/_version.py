@@ -290,8 +290,75 @@ def render_git_describe_long(pieces: Dict[str, Any]) -> str:
 
 def render(pieces: Dict[str, Any], style: str) -> Dict[str, Any]:
     """Render the given version pieces into the requested style."""
-    pass
+    if pieces["error"]:
+        return {"version": "unknown",
+                "full-revisionid": pieces.get("full-revisionid", ""),
+                "dirty": None,
+                "error": pieces["error"],
+                "date": None}
+
+    if not style or style == "default":
+        style = "pep440"  # default
+
+    if style == "pep440":
+        rendered = render_pep440(pieces)
+    elif style == "pep440-pre":
+        rendered = render_pep440_pre(pieces)
+    elif style == "pep440-post":
+        rendered = render_pep440_post(pieces)
+    elif style == "pep440-old":
+        rendered = render_pep440_old(pieces)
+    elif style == "git-describe":
+        rendered = render_git_describe(pieces)
+    elif style == "git-describe-long":
+        rendered = render_git_describe_long(pieces)
+    else:
+        raise ValueError("unknown style '%s'" % style)
+
+    return {"version": rendered, "full-revisionid": pieces["full-revisionid"],
+            "dirty": pieces["dirty"], "error": None,
+            "date": pieces.get("date")}
 
 def get_versions() -> Dict[str, Any]:
     """Get version information or return default if unable to do so."""
-    pass
+    # I am in _version.py, which lives at ROOT/VERSIONFILE_SOURCE. If we have
+    # __file__, we can work backwards from there to the root. Some
+    # py2exe/bbfreeze/non-CPython implementations don't do __file__, in which
+    # case we can only use expanded keywords.
+
+    cfg = get_config()
+    verbose = cfg.verbose
+
+    try:
+        return git_versions_from_keywords(get_keywords(), cfg.tag_prefix, verbose)
+    except NotThisMethod:
+        pass
+
+    try:
+        root = os.path.realpath(__file__)
+        # versionfile_source is the relative path from the top of the source
+        # tree (where the .git directory might live) to this file. Invert
+        # this to find the root from __file__.
+        for i in cfg.versionfile_source.split('/'):
+            root = os.path.dirname(root)
+    except NameError:
+        return {"version": "0+unknown", "full-revisionid": None,
+                "dirty": None,
+                "error": "unable to find root of source tree",
+                "date": None}
+
+    try:
+        pieces = git_pieces_from_vcs(cfg.tag_prefix, root, verbose)
+        return render(pieces, cfg.style)
+    except NotThisMethod:
+        pass
+
+    try:
+        if cfg.parentdir_prefix:
+            return versions_from_parentdir(cfg.parentdir_prefix, root, verbose)
+    except NotThisMethod:
+        pass
+
+    return {"version": "0+unknown", "full-revisionid": None,
+            "dirty": None,
+            "error": "unable to compute version", "date": None}
