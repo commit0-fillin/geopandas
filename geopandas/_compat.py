@@ -32,7 +32,13 @@ def import_optional_dependency(name: str, extra: str=''):
     -------
     module
     """
-    pass
+    try:
+        module = importlib.import_module(name)
+        return module
+    except ImportError:
+        err_msg = f"Missing optional dependency '{name}'. {extra}"
+        err_msg += f"\nUse pip or conda to install {name}."
+        raise ImportError(err_msg) from None
 try:
     import pyproj
     HAS_PYPROJ = True
