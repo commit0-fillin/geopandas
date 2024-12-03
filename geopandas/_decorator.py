@@ -19,4 +19,20 @@ def doc(*docstrings: Union[str, Callable], **params) -> Callable:
     **params
         The string which would be used to format docstring template.
     """
-    pass
+    def decorator(func):
+        # Store original docstrings
+        func._docstring_components = list(docstrings)
+
+        # Concatenate and process docstrings
+        doc = func.__doc__ or ""
+        for docstring in docstrings:
+            if callable(docstring):
+                doc += dedent(docstring.__doc__ or "")
+            else:
+                doc += dedent(docstring)
+
+        # Perform string substitution
+        func.__doc__ = doc.format(**params)
+
+        return func
+    return decorator
