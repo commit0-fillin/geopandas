@@ -24,7 +24,21 @@ def _sanitize_geoms(geoms, prefix='Multi'):
     component_index : index array
         indices are repeated for all components in the same Multi geometry
     """
-    pass
+    components = []
+    component_index = []
+
+    for idx, geom in enumerate(geoms):
+        if geom is None or geom.is_empty:
+            continue
+        if geom.type.startswith(prefix):
+            for part in geom.geoms:
+                components.append(part)
+                component_index.append(idx)
+        else:
+            components.append(geom)
+            component_index.append(idx)
+
+    return components, np.array(component_index)
 
 def _expand_kwargs(kwargs, multiindex):
     """
@@ -33,7 +47,12 @@ def _expand_kwargs(kwargs, multiindex):
     it (in place) to the correct length/formats with help of 'multiindex', unless
     the value appears to already be a valid (single) value for the key.
     """
-    pass
+    for key, value in kwargs.items():
+        if isinstance(value, (list, np.ndarray, pd.Series)):
+            if len(value) != len(multiindex):
+                kwargs[key] = np.take(value, multiindex)
+        elif not isinstance(value, (str, int, float, bool)):
+            kwargs[key] = [value] * len(multiindex)
 
 def _PolygonPatch(polygon, **kwargs):
     """Constructs a matplotlib patch from a Polygon geometry
@@ -51,7 +70,30 @@ def _PolygonPatch(polygon, **kwargs):
     (BSD license, https://pypi.org/project/descartes) for PolygonPatch, but
     this dependency was removed in favor of the below matplotlib code.
     """
-    pass
+    from matplotlib.patches import PathPatch
+    from matplotlib.path import Path
+
+    def ring_coding(ob):
+        # The codes will be all "LINETO" commands, except for "MOVETO"s at the
+        # beginning of each subpath
+        n = len(ob.coords)
+        codes = np.ones(n, dtype=Path.code_type) * Path.LINETO
+        codes[0] = Path.MOVETO
+        return codes
+
+    def pathify(polygon):
+        # Convert coordinates to path vertices. Objects produced by Shapely's
+        # analytic methods have the proper coordinate order, no need to sort.
+        vertices = np.concatenate(
+            [np.asarray(polygon.exterior.coords)[:, :2]]
+            + [np.asarray(r.coords)[:, :2] for r in polygon.interiors])
+        codes = np.concatenate(
+            [ring_coding(polygon.exterior)]
+            + [ring_coding(r) for r in polygon.interiors])
+        return Path(vertices, codes)
+
+    path = pathify(polygon)
+    return PathPatch(path, **kwargs)
 
 def _plot_polygon_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, autolim=True, **kwargs):
     """
@@ -82,7 +124,27 @@ def _plot_polygon_collection(ax, geoms, values=None, color=None, cmap=None, vmin
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    from matplotlib.collections import PatchCollection
+    from matplotlib.colors import Normalize
+
+    geoms, multiindex = _sanitize_geoms(geoms)
+    _expand_kwargs(kwargs, multiindex)
+
+    patches = [_PolygonPatch(poly) for poly in geoms]
+    collection = PatchCollection(patches, **kwargs)
+
+    if values is not None:
+        values = np.take(values, multiindex)
+        collection.set_array(values)
+        collection.set_cmap(cmap)
+        collection.set_norm(Normalize(vmin=vmin, vmax=vmax))
+    elif color is not None:
+        collection.set_facecolor(color)
+        collection.set_edgecolor(color)
+
+    ax.add_collection(collection, autolim=autolim)
+
+    return collection
 
 def _plot_linestring_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, autolim=True, **kwargs):
     """
@@ -106,7 +168,26 @@ def _plot_linestring_collection(ax, geoms, values=None, color=None, cmap=None, v
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
+
+    geoms, multiindex = _sanitize_geoms(geoms)
+    _expand_kwargs(kwargs, multiindex)
+
+    segments = [np.array(linestring.coords) for linestring in geoms]
+    collection = LineCollection(segments, **kwargs)
+
+    if values is not None:
+        values = np.take(values, multiindex)
+        collection.set_array(values)
+        collection.set_cmap(cmap)
+        collection.set_norm(Normalize(vmin=vmin, vmax=vmax))
+    elif color is not None:
+        collection.set_color(color)
+
+    ax.add_collection(collection, autolim=autolim)
+
+    return collection
 
 def _plot_point_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, marker='o', markersize=None, **kwargs):
     """
@@ -130,7 +211,24 @@ def _plot_point_collection(ax, geoms, values=None, color=None, cmap=None, vmin=N
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    geoms, multiindex = _sanitize_geoms(geoms)
+    _expand_kwargs(kwargs, multiindex)
+
+    x = [p.x for p in geoms]
+    y = [p.y for p in geoms]
+
+    if values is not None:
+        values = np.take(values, multiindex)
+
+    if markersize is not None:
+        if isinstance(markersize, (int, float)):
+            markersize = [markersize] * len(geoms)
+        else:
+            markersize = np.take(markersize, multiindex)
+
+    collection = ax.scatter(x, y, c=values, s=markersize, marker=marker, cmap=cmap, vmin=vmin, vmax=vmax, color=color, **kwargs)
+
+    return collection
 
 def plot_series(s, cmap=None, color=None, ax=None, figsize=None, aspect='auto', autolim=True, **style_kwds):
     """
@@ -178,7 +276,37 @@ def plot_series(s, cmap=None, color=None, ax=None, figsize=None, aspect='auto', 
     -------
     ax : matplotlib axes instance
     """
-    pass
+    import matplotlib.pyplot as plt
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    geom_types = s.geom_type.unique()
+    
+    for geom_type in geom_types:
+        if geom_type.startswith('Multi'):
+            geom_type = geom_type[5:]
+        
+        geoms = s[s.geom_type.isin([geom_type, f'Multi{geom_type}'])]
+        
+        if geom_type == 'Polygon':
+            _plot_polygon_collection(ax, geoms, color=color, cmap=cmap, autolim=autolim, **style_kwds)
+        elif geom_type == 'LineString':
+            _plot_linestring_collection(ax, geoms, color=color, cmap=cmap, autolim=autolim, **style_kwds)
+        elif geom_type == 'Point':
+            _plot_point_collection(ax, geoms, color=color, cmap=cmap, autolim=autolim, **style_kwds)
+    
+    if aspect == 'auto':
+        if s.crs and s.crs.is_geographic:
+            bounds = s.total_bounds
+            y_mean = np.mean(bounds[1::2])
+            ax.set_aspect(1 / np.cos(np.deg2rad(y_mean)))
+        else:
+            ax.set_aspect('equal')
+    elif aspect is not None:
+        ax.set_aspect(aspect)
+    
+    return ax
 
 def plot_dataframe(df, column=None, cmap=None, color=None, ax=None, cax=None, categorical=False, legend=False, scheme=None, k=5, vmin=None, vmax=None, markersize=None, figsize=None, legend_kwds=None, categories=None, classification_kwds=None, missing_kwds=None, aspect='auto', autolim=True, **style_kwds):
     """
@@ -234,7 +362,7 @@ def plot_dataframe(df, column=None, cmap=None, color=None, ax=None, cax=None, ca
         'NaturalBreaks', 'Quantiles', 'Percentiles', 'StdMean',
         'UserDefined'). Arguments can be passed in classification_kwds.
     k : int (default 5)
-        Number of classes (ignored if scheme is None)
+        Number of classes (ignore if scheme is None)
     vmin : None or float (default None)
         Minimum value of cmap. If None, the minimum data value
         in the column to be plotted is used.
@@ -310,7 +438,103 @@ def plot_dataframe(df, column=None, cmap=None, color=None, ax=None, cax=None, ca
     See the User Guide page :doc:`../../user_guide/mapping` for details.
 
     """
-    pass
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    from matplotlib.cm import ScalarMappable
+    import numpy as np
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    if column is not None:
+        if column not in df.columns:
+            raise ValueError(f"Column {column} not found in the GeoDataFrame")
+        values = df[column]
+        if categorical or values.dtype == object:
+            categorical = True
+            if categories is None:
+                categories = values.unique()
+            values = pd.Categorical(values, categories=categories)
+    else:
+        values = None
+
+    if scheme is not None:
+        if not categorical:
+            if classification_kwds is None:
+                classification_kwds = {}
+            if 'k' not in classification_kwds:
+                classification_kwds['k'] = k
+
+            try:
+                import mapclassify
+                binning = mapclassify.classify(
+                    np.asarray(values),
+                    scheme,
+                    **classification_kwds
+                )
+                values = binning.yb
+                categorical = True
+                categories = binning.bins
+                k = len(categories)
+            except ImportError:
+                warnings.warn("mapclassify not available. Ignoring the 'scheme' keyword")
+
+    if categorical:
+        if cmap is None:
+            cmap = plt.get_cmap('tab10')
+        elif isinstance(cmap, str):
+            cmap = plt.get_cmap(cmap)
+        categories = list(categories)
+        categories.sort()
+        color_mapping = {cat: cmap(i / len(categories)) for i, cat in enumerate(categories)}
+        colors = [color_mapping.get(value, (0, 0, 0, 0)) for value in values]
+    elif cmap is not None:
+        if isinstance(cmap, str):
+            cmap = plt.get_cmap(cmap)
+        norm = Normalize(vmin=vmin or values.min(), vmax=vmax or values.max())
+        scalar_map = ScalarMappable(norm=norm, cmap=cmap)
+        colors = scalar_map.to_rgba(values)
+    elif color is not None:
+        colors = color
+    else:
+        colors = None
+
+    geom_types = df.geometry.geom_type.unique()
+
+    for geom_type in geom_types:
+        if geom_type.startswith('Multi'):
+            geom_type = geom_type[5:]
+        
+        geoms = df[df.geometry.geom_type.isin([geom_type, f'Multi{geom_type}'])].geometry
+        
+        if geom_type == 'Polygon':
+            collection = _plot_polygon_collection(ax, geoms, colors, **style_kwds)
+        elif geom_type == 'LineString':
+            collection = _plot_linestring_collection(ax, geoms, colors, **style_kwds)
+        elif geom_type == 'Point':
+            collection = _plot_point_collection(ax, geoms, colors, markersize=markersize, **style_kwds)
+    
+    if legend and (categorical or cmap is not None):
+        if categorical:
+            legend_elements = [plt.Rectangle((0, 0), 1, 1, facecolor=color_mapping[cat]) for cat in categories]
+            ax.legend(legend_elements, categories, **legend_kwds or {})
+        else:
+            plt.colorbar(scalar_map, ax=ax, cax=cax, **legend_kwds or {})
+
+    if aspect == 'auto':
+        if df.crs and df.crs.is_geographic:
+            bounds = df.total_bounds
+            y_mean = np.mean(bounds[1::2])
+            ax.set_aspect(1 / np.cos(np.deg2rad(y_mean)))
+        else:
+            ax.set_aspect('equal')
+    elif aspect is not None:
+        ax.set_aspect(aspect)
+
+    if autolim:
+        ax.autoscale_view()
+    
+    return ax
 
 @doc(plot_dataframe)
 class GeoplotAccessor(PlotAccessor):
