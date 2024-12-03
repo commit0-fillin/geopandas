@@ -1,5 +1,13 @@
+
+A module to clip vector data using GeoPandas.
+
 """
-geopandas.clip
+import warnings
+import numpy as np
+import pandas.api.types
+from shapely.geometry import MultiPolygon, Polygon, box
+from geopandas import GeoDataFrame, GeoSeries
+from geopandas.array import _check_crs, _crs_mismatch_warn
 ==============
 
 A module to clip vector data using GeoPandas.
@@ -36,7 +44,32 @@ def _clip_gdf_with_mask(gdf, mask, sort=False):
         The returned GeoDataFrame is a clipped subset of gdf
         that intersects with polygon/rectangle.
     """
-    pass
+    if isinstance(mask, (Polygon, MultiPolygon)):
+        mask = GeoSeries([mask])
+    elif isinstance(mask, GeoDataFrame):
+        mask = mask.geometry
+    elif isinstance(mask, GeoSeries):
+        pass
+    else:
+        try:
+            mask = GeoSeries(mask)
+        except:
+            raise ValueError("Cannot convert mask to GeoSeries")
+
+    # Dissolve all polygons in mask
+    mask = mask.unary_union
+
+    # Perform the intersection
+    clipped = gdf.copy()
+    clipped['geometry'] = clipped.geometry.intersection(mask)
+
+    # Remove empty geometries
+    clipped = clipped[~clipped.geometry.is_empty]
+
+    if sort:
+        clipped = clipped.sort_index()
+
+    return clipped
 
 def clip(gdf, mask, keep_geom_type=False, sort=False):
     """Clip points, lines, or polygon geometries to the mask extent.
@@ -103,4 +136,15 @@ def clip(gdf, mask, keep_geom_type=False, sort=False):
     >>> nws_groceries.shape
     (7, 8)
     """
-    pass
+    from geopandas import GeoDataFrame, GeoSeries
+
+    if isinstance(mask, (list, tuple)) and len(mask) == 4:
+        return gdf.clip_by_rect(*mask)
+
+    if isinstance(gdf, GeoDataFrame):
+        return _clip_gdf_with_mask(gdf, mask, sort)
+    elif isinstance(gdf, GeoSeries):
+        clipped = _clip_gdf_with_mask(GeoDataFrame({'geometry': gdf}), mask, sort)
+        return clipped.geometry
+
+    raise ValueError("Input `gdf` should be GeoDataFrame or GeoSeries")
