@@ -34,13 +34,25 @@ def _check_crs(left, right, allow_none=False):
 
     If allow_none is True, empty CRS is treated as the same.
     """
-    pass
+    if allow_none and (left is None or right is None):
+        return True
+    elif left is None or right is None:
+        return False
+    else:
+        return left == right
 
 def _crs_mismatch_warn(left, right, stacklevel=3):
     """
     Raise a CRS mismatch warning with the information on the assigned CRS.
     """
-    pass
+    warnings.warn(
+        f"CRS mismatch between the CRS of left geometries and the CRS of right geometries.\n"
+        f"Left CRS: {left}\n"
+        f"Right CRS: {right}\n"
+        f"Use `to_crs()` to reproject geometries to the same CRS before comparison.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
 
 def isna(value):
     """
@@ -49,7 +61,7 @@ def isna(value):
     Custom version that only works for scalars (returning True or False),
     as `pd.isna` also works for array-like input returning a boolean array.
     """
-    pass
+    return value is None or (isinstance(value, float) and np.isnan(value)) or pd.isna(value)
 
 def from_shapely(data, crs=None):
     """
@@ -67,13 +79,16 @@ def from_shapely(data, crs=None):
         such as an authority string (eg "EPSG:4326") or a WKT string.
 
     """
-    pass
+    data = np.asarray(data, dtype=object)
+    return GeometryArray(data, crs=crs)
 
 def to_shapely(geoms):
     """
     Convert GeometryArray to numpy object array of shapely objects.
     """
-    pass
+    if isinstance(geoms, GeometryArray):
+        return geoms._data
+    return np.asarray(geoms, dtype=object)
 
 def from_wkb(data, crs=None, on_invalid='raise'):
     """
