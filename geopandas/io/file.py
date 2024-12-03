@@ -29,11 +29,14 @@ _EXTENSION_TO_DRIVER = {'.bna': 'BNA', '.dxf': 'DXF', '.csv': 'CSV', '.shp': 'ES
 
 def _expand_user(path):
     """Expand paths that use ~."""
-    pass
+    return os.path.expanduser(path)
 
 def _is_url(url):
     """Check to see if *url* has a valid protocol."""
-    pass
+    try:
+        return parse_url(url).scheme in _VALID_URLS
+    except Exception:
+        return False
 
 def _read_file(filename, bbox=None, mask=None, columns=None, rows=None, engine=None, **kwargs):
     """
@@ -78,27 +81,6 @@ def _read_file(filename, bbox=None, mask=None, columns=None, rows=None, engine=N
         arguments are passed to fiona.open`. For more information on possible
         keywords, type: ``import pyogrio; help(pyogrio.write_dataframe)``.
 
-
-    Examples
-    --------
-    >>> df = geopandas.read_file("nybb.shp")  # doctest: +SKIP
-
-    Specifying layer of GPKG:
-
-    >>> df = geopandas.read_file("file.gpkg", layer='cities')  # doctest: +SKIP
-
-    Reading only first 10 rows:
-
-    >>> df = geopandas.read_file("nybb.shp", rows=10)  # doctest: +SKIP
-
-    Reading only geometries intersecting ``mask``:
-
-    >>> df = geopandas.read_file("nybb.shp", mask=polygon)  # doctest: +SKIP
-
-    Reading only geometries intersecting ``bbox``:
-
-    >>> df = geopandas.read_file("nybb.shp", bbox=(0, 0, 10, 20))  # doctest: +SKIP
-
     Returns
     -------
     :obj:`geopandas.GeoDataFrame` or :obj:`pandas.DataFrame` :
@@ -121,13 +103,49 @@ def _read_file(filename, bbox=None, mask=None, columns=None, rows=None, engine=N
     (https://gdal.org/user/virtual_file_systems.html#vsicurl-http-https-ftp-files-random-access).
 
     """
-    pass
+    if engine is None:
+        engine = "pyogrio" if pyogrio is not None else "fiona"
+
+    if engine == "pyogrio":
+        if pyogrio is None:
+            raise ImportError("The 'pyogrio' package is required to use the pyogrio engine.")
+        return pyogrio.read_dataframe(filename, bbox=bbox, mask=mask, columns=columns, rows=rows, **kwargs)
+    elif engine == "fiona":
+        if fiona is None:
+            raise ImportError("The 'fiona' package is required to use the fiona engine.")
+        with fiona.open(filename, **kwargs) as source:
+            crs = source.crs
+            if bbox is not None:
+                if isinstance(bbox, (GeoDataFrame, GeoSeries)):
+                    bbox = tuple(bbox.total_bounds)
+                elif isinstance(bbox, BaseGeometry):
+                    bbox = bbox.bounds
+            if mask is not None:
+                if isinstance(mask, (GeoDataFrame, GeoSeries)):
+                    mask = mask.unary_union
+                elif isinstance(mask, dict):
+                    mask = shapely.geometry.shape(mask)
+            features = list(source.filter(bbox=bbox, mask=mask))
+            if columns:
+                features = [{k: f['properties'].get(k, None) for k in columns} for f in features]
+            if rows is not None:
+                if isinstance(rows, int):
+                    features = features[:rows]
+                elif isinstance(rows, slice):
+                    features = features[rows]
+            gdf = GeoDataFrame.from_features(features, crs=crs)
+            if columns:
+                gdf = gdf[columns]
+            return gdf
+    else:
+        raise ValueError("Engine must be either 'pyogrio' or 'fiona'")
 
 def _detect_driver(path):
     """
     Attempt to auto-detect driver based on the extension
     """
-    pass
+    extension = os.path.splitext(path)[-1].lower()
+    return _EXTENSION_TO_DRIVER.get(extension)
 
 def _to_file(df, filename, driver=None, schema=None, index=None, mode='w', crs=None, engine=None, metadata=None, **kwargs):
     """
@@ -158,31 +176,18 @@ def _to_file(df, filename, driver=None, schema=None, index=None, mode='w', crs=N
         Default None writes the index into one or more columns only if
         the index is named, is a MultiIndex, or has a non-integer data
         type. If False, no index is written.
-
-        .. versionadded:: 0.7
-            Previously the index was not written.
     mode : string, default 'w'
         The write mode, 'w' to overwrite the existing file and 'a' to append;
         when using the pyogrio engine, you can also pass ``append=True``.
-        Not all drivers support appending. For the fiona engine, the drivers
-        that support appending are listed in fiona.supported_drivers or
-        https://github.com/Toblerity/Fiona/blob/master/fiona/drvsupport.py.
-        For the pyogrio engine, you should be able to use any driver that
-        is available in your installation of GDAL that supports append
-        capability; see the specific driver entry at
-        https://gdal.org/drivers/vector/index.html for more information.
+        Not all drivers support appending.
     crs : pyproj.CRS, default None
         If specified, the CRS is passed to Fiona to
         better control how the file is written. If None, GeoPandas
         will determine the crs based on crs df attribute.
-        The value can be anything accepted
-        by :meth:`pyproj.CRS.from_user_input() <pyproj.crs.CRS.from_user_input>`,
-        such as an authority string (eg "EPSG:4326") or a WKT string.
     engine : str,  "pyogrio" or "fiona"
         The underlying library that is used to read the file. Currently, the
         supported options are "pyogrio" and "fiona". Defaults to "pyogrio" if
-        installed, otherwise tries "fiona". Engine can also be set globally
-        with the ``geopandas.options.io_engine`` option.
+        installed, otherwise tries "fiona".
     metadata : dict[str, str], default None
         Optional metadata to be stored in the file. Keys and values must be
         strings. Only supported for the "GPKG" driver
@@ -190,10 +195,6 @@ def _to_file(df, filename, driver=None, schema=None, index=None, mode='w', crs=N
     **kwargs :
         Keyword args to be passed to the engine, and can be used to write
         to multi-layer data, store data within archives (zip files), etc.
-        In case of the "fiona" engine, the keyword arguments are passed to
-        fiona.open`. For more information on possible keywords, type:
-        ``import fiona; help(fiona.open)``. In case of the "pyogrio" engine,
-        the keyword arguments are passed to `pyogrio.write_dataframe`.
 
     Notes
     -----
@@ -201,13 +202,34 @@ def _to_file(df, filename, driver=None, schema=None, index=None, mode='w', crs=N
     may fail. In this case, the proper encoding can be specified explicitly
     by using the encoding keyword parameter, e.g. ``encoding='utf-8'``.
     """
-    pass
+    if engine is None:
+        engine = "pyogrio" if pyogrio is not None else "fiona"
+
+    if driver is None:
+        driver = _detect_driver(filename)
+
+    if engine == "pyogrio":
+        if pyogrio is None:
+            raise ImportError("The 'pyogrio' package is required to use the pyogrio engine.")
+        pyogrio.write_dataframe(df, filename, driver=driver, crs=crs, append=mode=='a', metadata=metadata, **kwargs)
+    elif engine == "fiona":
+        if fiona is None:
+            raise ImportError("The 'fiona' package is required to use the fiona engine.")
+        if schema is None:
+            schema = _geometry_types(df)
+        with fiona.open(filename, mode, driver=driver, crs=crs, schema=schema, **kwargs) as colxn:
+            colxn.writerecords(df.iterfeatures())
+    else:
+        raise ValueError("Engine must be either 'pyogrio' or 'fiona'")
 
 def _geometry_types(df):
     """
     Determine the geometry types in the GeoDataFrame for the schema.
     """
-    pass
+    geom_types = set(df.geometry.geom_type)
+    if len(geom_types) == 1:
+        return geom_types.pop()
+    return "Mixed"
 
 def _list_layers(filename) -> pd.DataFrame:
     """List layers available in a file.
@@ -230,4 +252,11 @@ def _list_layers(filename) -> pd.DataFrame:
     pandas.DataFrame
         A DataFrame with columns "name" and "geometry_type" and one row per layer.
     """
-    pass
+    if pyogrio is not None:
+        return pyogrio.list_layers(filename)
+    elif fiona is not None:
+        with fiona.open(filename) as src:
+            layers = [{"name": layer, "geometry_type": src.schema["geometry"]} for layer in src.layers]
+        return pd.DataFrame(layers)
+    else:
+        raise ImportError("Either 'pyogrio' or 'fiona' is required to list layers.")
