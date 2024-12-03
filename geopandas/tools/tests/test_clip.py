@@ -16,29 +16,51 @@ mask_variants_large_rectangle = ['larger_single_rectangle_gdf', 'larger_single_r
 @pytest.fixture
 def point_gdf():
     """Create a point GeoDataFrame."""
-    pass
+    from shapely.geometry import Point
+    import geopandas as gpd
+    
+    points = [Point(0, 0), Point(1, 1), Point(2, 2)]
+    return gpd.GeoDataFrame(geometry=points)
 
 @pytest.fixture
 def point_gdf2():
     """Create a point GeoDataFrame."""
-    pass
+    from shapely.geometry import Point
+    import geopandas as gpd
+    import pandas as pd
+    
+    points = [Point(0, 0), Point(1, 1), Point(2, 2)]
+    df = pd.DataFrame({'id': [1, 2, 3], 'value': [10, 20, 30]})
+    return gpd.GeoDataFrame(df, geometry=points)
 
 @pytest.fixture
 def pointsoutside_nooverlap_gdf():
     """Create a point GeoDataFrame. Its points are all outside the single
     rectangle, and its bounds are outside the single rectangle's."""
-    pass
+    from shapely.geometry import Point
+    import geopandas as gpd
+    
+    points = [Point(-2, -2), Point(-1, -1), Point(-3, -3)]
+    return gpd.GeoDataFrame(geometry=points)
 
 @pytest.fixture
 def pointsoutside_overlap_gdf():
     """Create a point GeoDataFrame. Its points are all outside the single
     rectangle, and its bounds are overlapping the single rectangle's."""
-    pass
+    from shapely.geometry import Point
+    import geopandas as gpd
+    
+    points = [Point(-1, -1), Point(3, 3), Point(1, 3)]
+    return gpd.GeoDataFrame(geometry=points)
 
 @pytest.fixture
 def single_rectangle_gdf():
     """Create a single rectangle for clipping."""
-    pass
+    from shapely.geometry import box
+    import geopandas as gpd
+    
+    rectangle = box(0, 0, 2, 2)
+    return gpd.GeoDataFrame(geometry=[rectangle])
 
 @pytest.fixture
 def single_rectangle_gdf_tuple_bounds(single_rectangle_gdf):
