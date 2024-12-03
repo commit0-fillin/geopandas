@@ -9,7 +9,13 @@ import functools
 
 def get_keywords() -> Dict[str, str]:
     """Get the keywords needed to look up the version information."""
-    pass
+    # These strings will be replaced by git during git-archive.
+    # They may be used by the package to determine the version.
+    git_refnames = "$Format:%d$"
+    git_full = "$Format:%H$"
+    git_date = "$Format:%ci$"
+    keywords = {"refnames": git_refnames, "full": git_full, "date": git_date}
+    return keywords
 
 class VersioneerConfig:
     """Container for Versioneer configuration parameters."""
@@ -22,7 +28,14 @@ class VersioneerConfig:
 
 def get_config() -> VersioneerConfig:
     """Create, populate and return the VersioneerConfig() object."""
-    pass
+    cfg = VersioneerConfig()
+    cfg.VCS = "git"
+    cfg.style = "pep440"
+    cfg.tag_prefix = "v"
+    cfg.parentdir_prefix = "geopandas-"
+    cfg.versionfile_source = "geopandas/_version.py"
+    cfg.verbose = False
+    return cfg
 
 class NotThisMethod(Exception):
     """Exception raised if a method is not valid for the current scenario."""
@@ -31,11 +44,43 @@ HANDLERS: Dict[str, Dict[str, Callable]] = {}
 
 def register_vcs_handler(vcs: str, method: str) -> Callable:
     """Create decorator to mark a method as the handler of a VCS."""
-    pass
+    def decorate(f: Callable) -> Callable:
+        if vcs not in HANDLERS:
+            HANDLERS[vcs] = {}
+        HANDLERS[vcs][method] = f
+        return f
+    return decorate
 
 def run_command(commands: List[str], args: List[str], cwd: Optional[str]=None, verbose: bool=False, hide_stderr: bool=False, env: Optional[Dict[str, str]]=None) -> Tuple[Optional[str], Optional[int]]:
     """Call the given command(s)."""
-    pass
+    assert isinstance(commands, list)
+    p = None
+    for c in commands:
+        try:
+            dispcmd = str([c] + args)
+            # remember shell=False, so use git.cmd on windows, not just git
+            p = subprocess.Popen([c] + args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                 stderr=(subprocess.PIPE if hide_stderr else None))
+            break
+        except EnvironmentError:
+            e = sys.exc_info()[1]
+            if e.errno == errno.ENOENT:
+                continue
+            if verbose:
+                print("unable to run %s" % dispcmd)
+                print(e)
+            return None, None
+    else:
+        if verbose:
+            print("unable to find command, tried %s" % (commands,))
+        return None, None
+    stdout = p.communicate()[0].strip().decode()
+    if p.returncode != 0:
+        if verbose:
+            print("unable to run %s (error)" % dispcmd)
+            print("stdout was %s" % stdout)
+        return None, p.returncode
+    return stdout, p.returncode
 
 def versions_from_parentdir(parentdir_prefix: str, root: str, verbose: bool) -> Dict[str, Any]:
     """Try to determine the version from the parent directory name.
@@ -44,17 +89,99 @@ def versions_from_parentdir(parentdir_prefix: str, root: str, verbose: bool) -> 
     the project name and a version string. We will also support searching up
     two directory levels for an appropriately named parent directory
     """
-    pass
+    rootdirs = []
+
+    for i in range(3):
+        dirname = os.path.basename(root)
+        if dirname.startswith(parentdir_prefix):
+            return {"version": dirname[len(parentdir_prefix):],
+                    "full-revisionid": None,
+                    "dirty": False, "error": None, "date": None}
+        else:
+            rootdirs.append(root)
+            root = os.path.dirname(root)
+
+    if verbose:
+        print("Tried directories %s but none started with prefix %s" %
+              (str(rootdirs), parentdir_prefix))
+    raise NotThisMethod("rootdir doesn't start with parentdir_prefix")
 
 @register_vcs_handler('git', 'get_keywords')
 def git_get_keywords(versionfile_abs: str) -> Dict[str, str]:
     """Extract version information from the given file."""
-    pass
+    # the code embedded in _version.py can just fetch the value of these
+    # keywords. When used from setup.py, we don't want to import _version.py,
+    # so we do it with a regexp instead. This function is not used from
+    # _version.py.
+    keywords = {}
+    try:
+        f = open(versionfile_abs, "r")
+        for line in f.readlines():
+            if line.strip().startswith("git_refnames ="):
+                mo = re.search(r'=\s*"(.*)"', line)
+                if mo:
+                    keywords["refnames"] = mo.group(1)
+            if line.strip().startswith("git_full ="):
+                mo = re.search(r'=\s*"(.*)"', line)
+                if mo:
+                    keywords["full"] = mo.group(1)
+            if line.strip().startswith("git_date ="):
+                mo = re.search(r'=\s*"(.*)"', line)
+                if mo:
+                    keywords["date"] = mo.group(1)
+        f.close()
+    except EnvironmentError:
+        pass
+    return keywords
 
 @register_vcs_handler('git', 'keywords')
 def git_versions_from_keywords(keywords: Dict[str, str], tag_prefix: str, verbose: bool) -> Dict[str, Any]:
     """Get version information from git keywords."""
-    pass
+    if not keywords:
+        raise NotThisMethod("no keywords at all, weird")
+    date = keywords.get("date")
+    if date is not None:
+        # git-2.2.0 added "%cI", which expands to an ISO-8601 format
+        date = date.strip().replace(" ", "T", 1).replace(" ", "", 1)
+    refnames = keywords["refnames"].strip()
+    if refnames.startswith("$Format"):
+        if verbose:
+            print("keywords are unexpanded, not using")
+        raise NotThisMethod("unexpanded keywords, not a git-archive tarball")
+    refs = set([r.strip() for r in refnames.strip("()").split(",")])
+    # starting in git-1.8.3, tags are listed as "tag: foo-1.0" instead of
+    # just "foo-1.0". If we see a "tag: " prefix, prefer those.
+    TAG = "tag: "
+    tags = set([r[len(TAG):] for r in refs if r.startswith(TAG)])
+    if not tags:
+        # Either we're using git < 1.8.3, or there really are no tags. We use
+        # a heuristic: assume all version tags have a digit. The old git %d
+        # expansion behaves like git log --decorate=short and strips out the
+        # refs/heads/ and refs/tags/ prefixes that would let us distinguish
+        # between branches and tags. By ignoring refnames without digits, we
+        # filter out many common branch names like "release" and
+        # "stabilization", as well as "HEAD" and "master".
+        tags = set([r for r in refs if re.search(r'\d', r)])
+        if verbose:
+            print("discarding '%s', no digits" % ",".join(refs - tags))
+    if verbose:
+        print("likely tags: %s" % ",".join(sorted(tags)))
+    for ref in sorted(tags):
+        # sorting will prefer e.g. "2.0" over "2.0rc1"
+        if ref.startswith(tag_prefix):
+            r = ref[len(tag_prefix):]
+            if verbose:
+                print("picking %s" % r)
+            return {"version": r,
+                    "full-revisionid": keywords["full"].strip(),
+                    "dirty": False, "error": None,
+                    "date": date}
+    # no suitable tags, so version is "0+unknown", but full hex is still there
+    if verbose:
+        print("no suitable tags, using unknown + full revision id")
+    return {"version": "0+unknown",
+            "full-revisionid": keywords["full"].strip(),
+            "dirty": False, "error": "no suitable tags", "date": None}
 
 @register_vcs_handler('git', 'pieces_from_vcs')
 def git_pieces_from_vcs(tag_prefix: str, root: str, verbose: bool, runner: Callable=run_command) -> Dict[str, Any]:
