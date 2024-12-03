@@ -23,7 +23,15 @@ def _get_conn(conn_or_engine):
     -------
     Connection
     """
-    pass
+    from sqlalchemy.engine import Engine
+
+    if isinstance(conn_or_engine, Engine):
+        with conn_or_engine.begin() as conn:
+            yield conn
+    else:
+        # Assume it's a Connection
+        with conn_or_engine.begin():
+            yield conn_or_engine
 
 def _df_to_geodf(df, geom_col='geom', crs=None, con=None):
     """
@@ -48,7 +56,26 @@ def _df_to_geodf(df, geom_col='geom', crs=None, con=None):
     -------
     GeoDataFrame
     """
-    pass
+    from shapely import wkb
+    import pyproj
+
+    if geom_col not in df:
+        raise ValueError(f"Column {geom_col} not found in DataFrame")
+
+    df[geom_col] = df[geom_col].apply(lambda x: wkb.loads(x, hex=True))
+
+    gdf = GeoDataFrame(df, geometry=geom_col)
+
+    if crs is None and con is not None:
+        # Try to determine CRS from the database
+        with _get_conn(con) as conn:
+            cursor = conn.execute("SELECT Find_SRID('public', 'geometry_columns', 'geom')")
+            srid = cursor.fetchone()[0]
+            if srid != 0:
+                crs = pyproj.CRS.from_epsg(srid)
+
+    gdf.set_crs(crs, inplace=True)
+    return gdf
 
 def _read_postgis(sql, con, geom_col='geom', crs=None, index_col=None, coerce_float=True, parse_dates=None, params=None, chunksize=None):
     """
@@ -98,7 +125,22 @@ def _read_postgis(sql, con, geom_col='geom', crs=None, index_col=None, coerce_fl
     >>> sql = "SELECT ST_AsBinary(geom) AS geom, highway FROM roads"
     >>> df = geopandas.read_postgis(sql, con)  # doctest: +SKIP
     """
-    pass
+    import pandas as pd
+
+    if chunksize is not None:
+        # Return an iterator
+        df_iterator = pd.read_sql(
+            sql, con, index_col=index_col, coerce_float=coerce_float,
+            parse_dates=parse_dates, params=params, chunksize=chunksize
+        )
+        return (_df_to_geodf(df, geom_col, crs, con) for df in df_iterator)
+    else:
+        # Return a GeoDataFrame
+        df = pd.read_sql(
+            sql, con, index_col=index_col, coerce_float=coerce_float,
+            parse_dates=parse_dates, params=params
+        )
+        return _df_to_geodf(df, geom_col, crs, con)
 
 def _get_geometry_type(gdf):
     """
@@ -119,17 +161,46 @@ def _get_geometry_type(gdf):
      - if any of the geometries has Z-coordinate, all records will
        be written with 3D.
     """
-    pass
+    from shapely.geometry import LinearRing
+    from shapely.geometry.base import BaseGeometry
+
+    geom_types = set(gdf.geometry.type)
+
+    if len(geom_types) == 1:
+        geom_type = geom_types.pop()
+        if geom_type == 'LinearRing':
+            return 'LineString'
+        return geom_type
+    elif all(t in ('Polygon', 'MultiPolygon') for t in geom_types):
+        return 'Polygon'
+    elif all(t in ('Point', 'MultiPoint') for t in geom_types):
+        return 'Point'
+    elif all(t in ('LineString', 'MultiLineString') for t in geom_types):
+        return 'LineString'
+    else:
+        return 'Geometry'
 
 def _get_srid_from_crs(gdf):
     """
     Get EPSG code from CRS if available. If not, return 0.
     """
-    pass
+    if gdf.crs is None:
+        return 0
+    try:
+        return gdf.crs.to_epsg() or 0
+    except:
+        return 0
 
 def _convert_to_ewkb(gdf, geom_name, srid):
     """Convert geometries to ewkb."""
-    pass
+    from shapely import wkb
+
+    def convert(geom):
+        if geom is None:
+            return None
+        return wkb.dumps(geom, hex=True, srid=srid)
+
+    return gdf[geom_name].apply(convert)
 
 def _write_postgis(gdf, name, con, schema=None, if_exists='fail', index=False, index_label=None, chunksize=None, dtype=None):
     """
@@ -174,4 +245,39 @@ def _write_postgis(gdf, name, con, schema=None, if_exists='fail', index=False, i
     >>> engine = create_engine("postgresql://myusername:mypassword@myhost:5432/mydatabase";)  # doctest: +SKIP
     >>> gdf.to_postgis("my_table", engine)  # doctest: +SKIP
     """
-    pass
+    from sqlalchemy import Table, Column, MetaData
+    from geoalchemy2 import Geometry
+
+    if schema is None:
+        schema = 'public'
+
+    # Get geometry column name
+    geom_col = gdf.geometry.name
+
+    # Get geometry type
+    geom_type = _get_geometry_type(gdf)
+
+    # Get SRID
+    srid = _get_srid_from_crs(gdf)
+
+    # Create a copy of the GeoDataFrame
+    gdf_copy = gdf.copy()
+
+    # Convert geometry column to EWKB
+    gdf_copy[geom_col] = _convert_to_ewkb(gdf_copy, geom_col, srid)
+
+    # Create SQLAlchemy metadata
+    metadata = MetaData(schema=schema)
+
+    # Create table
+    table = Table(name, metadata,
+                  Column(geom_col, Geometry(geometry_type=geom_type, srid=srid)),
+                  schema=schema)
+
+    # Create table in database if it doesn't exist
+    if not con.dialect.has_table(con, name, schema=schema):
+        table.create(con)
+
+    # Write to PostGIS
+    gdf_copy.to_sql(name, con, schema=schema, if_exists=if_exists, index=index,
+                    index_label=index_label, chunksize=chunksize, dtype=dtype)
