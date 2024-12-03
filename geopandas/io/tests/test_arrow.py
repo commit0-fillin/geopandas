@@ -286,18 +286,11 @@ def test_read_versioned_file(version):
     assert parquet_gdf.crs == "EPSG:4326"
 
 def test_read_gdal_files():
-    """
-    Verify that files written by GDAL can be read by geopandas.
-    This test uses pre-generated files for GDAL versions 3.5.0 and 3.9.0.
-    """
-    gdal350_parquet = DATA_PATH / 'arrow' / 'test_data_gdal350.parquet'
-    gdal350_arrow = DATA_PATH / 'arrow' / 'test_data_gdal350.arrow'
-    gdal390_parquet = DATA_PATH / 'arrow' / 'test_data_gdal390.parquet'
-    
-    gdfs = {
-        'GDAL 3.5.0 Parquet': read_parquet(gdal350_parquet),
-        'GDAL 3.5.0 Arrow': read_feather(gdal350_arrow),
-        'GDAL 3.9.0 Parquet': read_parquet(gdal390_parquet)
+    """Verify that files written by GDAL can be read by geopandas."""
+    test_files = {
+        'GDAL 3.5.0 Parquet': DATA_PATH / 'arrow' / 'test_data_gdal350.parquet',
+        'GDAL 3.5.0 Arrow': DATA_PATH / 'arrow' / 'test_data_gdal350.arrow',
+        'GDAL 3.9.0 Parquet': DATA_PATH / 'arrow' / 'test_data_gdal390.parquet'
     }
     
     expected_columns = ['col_str', 'col_int', 'col_float', 'geometry']
@@ -306,8 +299,17 @@ def test_read_gdal_files():
         'col_int': [1, 2],
         'col_float': [0.1, 0.2],
     }
+    expected_geometries = [
+        shapely.geometry.MultiPolygon([
+            shapely.geometry.Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]),
+            shapely.geometry.Polygon([(2, 2), (3, 2), (3, 3), (2, 3), (2, 2)])
+        ]),
+        shapely.geometry.Polygon([(4, 4), (5, 4), (5, 5), (4, 5), (4, 4)])
+    ]
     
-    for name, gdf in gdfs.items():
+    for name, file_path in test_files.items():
+        gdf = read_parquet(file_path) if file_path.suffix == '.parquet' else read_feather(file_path)
+        
         assert isinstance(gdf, geopandas.GeoDataFrame), f"{name} should be a GeoDataFrame"
         assert list(gdf.columns) == expected_columns, f"{name} columns do not match expected"
         assert gdf.crs == "EPSG:4326", f"{name} CRS should be EPSG:4326"
@@ -316,13 +318,8 @@ def test_read_gdal_files():
         for col, values in expected_data.items():
             assert gdf[col].tolist() == values, f"{name} {col} data does not match expected"
         
-        assert all(isinstance(geom, (shapely.geometry.MultiPolygon, shapely.geometry.Polygon)) for geom in gdf.geometry), \
-            f"{name} geometry types are not as expected"
+        for i, expected_geom in enumerate(expected_geometries):
+            assert gdf.geometry.iloc[i].equals(expected_geom), f"{name} geometry at index {i} does not match expected"
         
-        assert isinstance(gdf.geometry.iloc[0], shapely.geometry.MultiPolygon), f"{name} first geometry should be MultiPolygon"
-        assert isinstance(gdf.geometry.iloc[1], shapely.geometry.Polygon), f"{name} second geometry should be Polygon"
-        assert gdf.geometry.iloc[0].bounds == (0, 0, 3, 3), f"{name} first geometry bounds are incorrect"
-        assert gdf.geometry.iloc[1].bounds == (4, 4, 5, 5), f"{name} second geometry bounds are incorrect"
-    
-    # Check if GDAL 3.9 version has bbox column
-    assert 'bbox' in gdfs['GDAL 3.9.0 Parquet']._metadata['columns']['geometry'], "GDAL 3.9.0 Parquet should have bbox metadata"
+        if '3.9.0' in name:
+            assert 'bbox' in gdf._metadata['columns']['geometry'], f"{name} should have bbox metadata"
