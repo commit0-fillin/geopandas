@@ -41,17 +41,55 @@ driver_ext_pairs = [('ESRI Shapefile', '.shp'), ('GeoJSON', '.geojson'), ('GPKG'
 @pytest.mark.parametrize('driver,ext', driver_ext_pairs)
 def test_to_file(tmpdir, df_nybb, df_null, driver, ext, engine):
     """Test to_file and from_file"""
-    pass
+    filename = str(tmpdir.join(f"test{ext}"))
+    df_nybb.to_file(filename, driver=driver, engine=engine)
+    
+    # Read the file back
+    df = read_file(filename, engine=engine)
+    
+    # Check that the read DataFrame is equal to the original
+    assert_geodataframe_equal(df, df_nybb)
+    
+    # Test with df_null (contains null geometries)
+    filename_null = str(tmpdir.join(f"test_null{ext}"))
+    df_null.to_file(filename_null, driver=driver, engine=engine)
+    
+    # Read the null geometry file back
+    df_null_read = read_file(filename_null, engine=engine)
+    
+    # Check that the read DataFrame is equal to the original
+    assert_geodataframe_equal(df_null_read, df_null)
 
 @pytest.mark.parametrize('driver,ext', driver_ext_pairs)
 def test_to_file_pathlib(tmpdir, df_nybb, driver, ext, engine):
-    """Test to_file and from_file"""
-    pass
+    """Test to_file and from_file with pathlib.Path"""
+    filename = tmpdir.join(f"test{ext}")
+    path = Path(filename)
+    df_nybb.to_file(path, driver=driver, engine=engine)
+    
+    # Read the file back using pathlib.Path
+    df = read_file(path, engine=engine)
+    
+    # Check that the read DataFrame is equal to the original
+    assert_geodataframe_equal(df, df_nybb)
 
 @pytest.mark.parametrize('driver,ext', driver_ext_pairs)
 def test_to_file_bool(tmpdir, driver, ext, engine):
     """Test error raise when writing with a boolean column (GH #437)."""
-    pass
+    df = GeoDataFrame(
+        {'a': [1, 2, 3], 'b': [True, False, True]},
+        geometry=[Point(0, 0), Point(1, 1), Point(2, 2)]
+    )
+    
+    filename = str(tmpdir.join(f"test{ext}"))
+    
+    if driver == 'ESRI Shapefile':
+        with pytest.raises(ValueError, match="ESRI Shapefile does not support boolean"):
+            df.to_file(filename, driver=driver, engine=engine)
+    else:
+        df.to_file(filename, driver=driver, engine=engine)
+        df_read = read_file(filename, engine=engine)
+        assert_geodataframe_equal(df_read, df)
 TEST_DATE = datetime.datetime(2021, 11, 21, 1, 7, 43, 17500)
 eastern = pytz.timezone('America/New_York')
 datetime_type_tests = (TEST_DATE, eastern.localize(TEST_DATE))
