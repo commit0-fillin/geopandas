@@ -216,7 +216,21 @@ def _explore(df, column=None, cmap=None, color=None, m=None, tiles='OpenStreetMa
 
 def _tooltip_popup(type, fields, gdf, **kwds):
     """get tooltip or popup"""
-    pass
+    import folium
+
+    if fields is True:
+        fields = gdf.columns.tolist()
+    elif isinstance(fields, int):
+        fields = gdf.columns[:fields].tolist()
+    elif isinstance(fields, str):
+        fields = [fields]
+
+    if type == "tooltip":
+        return folium.GeoJsonTooltip(fields=fields, aliases=fields, **kwds)
+    elif type == "popup":
+        return folium.GeoJsonPopup(fields=fields, aliases=fields, **kwds)
+    else:
+        raise ValueError("Type must be either 'tooltip' or 'popup'")
 
 def _categorical_legend(m, title, categories, colors):
     """
@@ -239,7 +253,47 @@ def _categorical_legend(m, title, categories, colors):
     colors : list-like
         list of colors (in the same order as categories)
     """
-    pass
+    from branca.element import Template, MacroElement
+
+    template = """
+    {% macro html(this, kwargs) %}
+    <div style="
+        position: fixed; 
+        bottom: 50px; 
+        right: 50px; 
+        width: 120px; 
+        height: 90px; 
+        z-index:9999; 
+        font-size:14px;
+        ">
+        <p><a style="color: #0000ff" href=""><b>{{this.title}}</b></a></p>
+        {% for category, color in this.color_dict.items() %}
+        <p><i class="fa fa-circle fa-1x"
+                style="color:{{color}}"></i> {{category}}
+        </p>
+        {% endfor %}
+    </div>
+    <div style="
+        position: fixed; 
+        bottom: 50px; 
+        left: 50px; 
+        width: 150px; 
+        height: 30px; 
+        z-index:9998; 
+        font-size:14px;
+        background-color: #ffffff;
+        opacity: 0.7;
+        ">&copy; <a href="https://github.com/michelmetran">Michel Metran</a>
+    </div>
+    {% endmacro %}
+    """
+
+    color_dict = dict(zip(categories, colors))
+    macro = MacroElement()
+    macro._template = Template(template)
+    macro.title = title
+    macro.color_dict = color_dict
+    m.get_root().add_child(macro)
 
 def _explore_geoseries(s, color=None, m=None, tiles='OpenStreetMap', attr=None, highlight=True, width='100%', height='100%', control_scale=True, marker_type=None, marker_kwds={}, style_kwds={}, highlight_kwds={}, map_kwds={}, **kwargs):
     """Interactive map based on GeoPandas and folium/leaflet.js
