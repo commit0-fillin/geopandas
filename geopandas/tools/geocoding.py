@@ -9,7 +9,13 @@ def _get_throttle_time(provider):
     Amount of time to wait between requests to a geocoding API, for providers
     that specify rate limits in their terms of service.
     """
-    pass
+    throttle_times = {
+        'nominatim': 1.0,  # 1 request per second
+        'googlev3': 0.2,   # 50 requests per second
+        'bing': 0.5,       # 2 requests per second
+        'photon': 0.1,     # 10 requests per second (default)
+    }
+    return throttle_times.get(provider, 0.1)  # Default to 0.1 if provider not listed
 
 def geocode(strings, provider=None, **kwargs):
     """
@@ -48,7 +54,28 @@ def geocode(strings, provider=None, **kwargs):
     0  POINT (-71.05863 42.35899)                          Boston, MA, United States
     1  POINT (-77.03651 38.89766)  1600 Pennsylvania Ave NW, Washington, DC 20006...
     """
-    pass
+    from geopy.geocoders import get_geocoder_for_service
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+
+    if provider is None:
+        provider = 'photon'
+
+    if isinstance(provider, str):
+        geocoder = get_geocoder_for_service(provider)(**kwargs)
+    else:
+        geocoder = provider
+
+    results = {}
+    for i, string in enumerate(strings):
+        try:
+            result = geocoder.geocode(string)
+            if result is not None:
+                results[i] = (string, (result.latitude, result.longitude))
+        except (GeocoderTimedOut, GeocoderServiceError):
+            continue
+        time.sleep(_get_throttle_time(provider))
+
+    return _prepare_geocode_result(results)
 
 def reverse_geocode(points, provider=None, **kwargs):
     """
@@ -93,7 +120,28 @@ def reverse_geocode(points, provider=None, **kwargs):
     0  POINT (-71.05941 42.35837)       29 Court Sq, Boston, MA 02108, United States
     1  POINT (-77.03641 38.89766)  1600 Pennsylvania Ave NW, Washington, DC 20006...
     """
-    pass
+    from geopy.geocoders import get_geocoder_for_service
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+
+    if provider is None:
+        provider = 'photon'
+
+    if isinstance(provider, str):
+        geocoder = get_geocoder_for_service(provider)(**kwargs)
+    else:
+        geocoder = provider
+
+    results = {}
+    for i, point in enumerate(points):
+        try:
+            result = geocoder.reverse((point.y, point.x))
+            if result is not None:
+                results[i] = (result.address, (point.y, point.x))
+        except (GeocoderTimedOut, GeocoderServiceError):
+            continue
+        time.sleep(_get_throttle_time(provider))
+
+    return _prepare_geocode_result(results)
 
 def _prepare_geocode_result(results):
     """
@@ -103,4 +151,14 @@ def _prepare_geocode_result(results):
     (address, (lat, lon))
 
     """
-    pass
+    if not results:
+        return geopandas.GeoDataFrame()
+
+    df = pd.DataFrame(
+        {
+            "geometry": [Point(lon, lat) for _, (lat, lon) in results.values()],
+            "address": [address for address, _ in results.values()],
+        },
+        index=results.keys(),
+    )
+    return geopandas.GeoDataFrame(df, crs="EPSG:4326")
