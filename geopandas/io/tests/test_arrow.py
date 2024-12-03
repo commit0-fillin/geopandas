@@ -290,22 +290,7 @@ def test_read_gdal_files():
     Verify that files written by GDAL can be read by geopandas.
     Since it is currently not yet straightforward to install GDAL with
     Parquet/Arrow enabled in our conda setup, we are testing with some
-    generated files included in the repo (using GDAL 3.5.0):
-
-    # small dummy test dataset (not naturalearth_lowres, as this can change over time)
-    from shapely.geometry import box, MultiPolygon
-    df = geopandas.GeoDataFrame(
-        {"col_str": ["a", "b"], "col_int": [1, 2], "col_float": [0.1, 0.2]},
-        geometry=[MultiPolygon([box(0, 0, 1, 1), box(2, 2, 3, 3)]), box(4, 4, 5,5)],
-        crs="EPSG:4326",
-    )
-    df.to_file("test_data.gpkg", GEOMETRY_NAME="geometry")
-    and then the gpkg file is converted to Parquet/Arrow with:
-    $ ogr2ogr -f Parquet -lco FID= test_data_gdal350.parquet test_data.gpkg
-    $ ogr2ogr -f Arrow -lco FID= -lco GEOMETRY_ENCODING=WKB test_data_gdal350.arrow test_data.gpkg
-
-    Repeated for GDAL 3.9 which adds a bbox covering column:
-    $ ogr2ogr -f Parquet -lco FID= test_data_gdal390.parquet test_data.gpkg
+    generated files included in the repo (using GDAL 3.5.0 and 3.9.0).
     """
     gdal350_parquet = DATA_PATH / 'arrow' / 'test_data_gdal350.parquet'
     gdal350_arrow = DATA_PATH / 'arrow' / 'test_data_gdal350.arrow'
@@ -316,16 +301,28 @@ def test_read_gdal_files():
     gdf_390_parquet = read_parquet(gdal390_parquet)
     
     expected_columns = ['col_str', 'col_int', 'col_float', 'geometry']
+    expected_data = {
+        'col_str': ['a', 'b'],
+        'col_int': [1, 2],
+        'col_float': [0.1, 0.2],
+    }
     
     for gdf in [gdf_350_parquet, gdf_350_arrow, gdf_390_parquet]:
         assert isinstance(gdf, geopandas.GeoDataFrame)
         assert list(gdf.columns) == expected_columns
         assert gdf.crs == "EPSG:4326"
         assert len(gdf) == 2
-        assert gdf['col_str'].tolist() == ['a', 'b']
-        assert gdf['col_int'].tolist() == [1, 2]
-        assert gdf['col_float'].tolist() == [0.1, 0.2]
+        
+        for col, values in expected_data.items():
+            assert gdf[col].tolist() == values
+        
         assert all(isinstance(geom, (shapely.geometry.MultiPolygon, shapely.geometry.Polygon)) for geom in gdf.geometry)
+        
+        # Check specific geometry types and coordinates
+        assert isinstance(gdf.geometry.iloc[0], shapely.geometry.MultiPolygon)
+        assert isinstance(gdf.geometry.iloc[1], shapely.geometry.Polygon)
+        assert gdf.geometry.iloc[0].bounds == (0, 0, 3, 3)
+        assert gdf.geometry.iloc[1].bounds == (4, 4, 5, 5)
     
     # Check if GDAL 3.9 version has bbox column
     assert 'bbox' in gdf_390_parquet._metadata['columns']['geometry']
