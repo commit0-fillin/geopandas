@@ -24,7 +24,16 @@ def _remove_id_from_member_of_ensembles(json_dict):
 
     Mimicking the patch to GDAL from https://github.com/OSGeo/gdal/pull/5872
     """
-    pass
+    if isinstance(json_dict, dict):
+        if "members" in json_dict:
+            for member in json_dict["members"]:
+                if isinstance(member, dict):
+                    member.pop("id", None)
+        for value in json_dict.values():
+            _remove_id_from_member_of_ensembles(value)
+    elif isinstance(json_dict, list):
+        for item in json_dict:
+            _remove_id_from_member_of_ensembles(item)
 _geometry_type_names = ['Point', 'LineString', 'LineString', 'Polygon', 'MultiPoint', 'MultiLineString', 'MultiPolygon', 'GeometryCollection']
 _geometry_type_names += [geom_type + ' Z' for geom_type in _geometry_type_names]
 
@@ -32,7 +41,7 @@ def _get_geometry_types(series):
     """
     Get unique geometry types from a GeoSeries.
     """
-    pass
+    return series.geom_type.unique().tolist()
 
 def _create_metadata(df, schema_version=None, geometry_encoding=None, write_covering_bbox=False):
     """Create and encode geo metadata dict.
@@ -52,7 +61,27 @@ def _create_metadata(df, schema_version=None, geometry_encoding=None, write_cove
     -------
     dict
     """
-    pass
+    if schema_version is None:
+        schema_version = '1.0.0'
+
+    metadata = {
+        'version': schema_version,
+        'primary_column': df._geometry_column_name,
+        'columns': {
+            df._geometry_column_name: {
+                'encoding': geometry_encoding or 'WKB',
+                'geometry_types': _get_geometry_types(df.geometry)
+            }
+        }
+    }
+
+    if df.crs:
+        metadata['columns'][df._geometry_column_name]['crs'] = df.crs.to_wkt()
+
+    if write_covering_bbox:
+        metadata['columns'][df._geometry_column_name]['bbox'] = df.total_bounds.tolist()
+
+    return metadata
 
 def _encode_metadata(metadata):
     """Encode metadata dict to UTF-8 JSON string
@@ -65,7 +94,7 @@ def _encode_metadata(metadata):
     -------
     UTF-8 encoded JSON string
     """
-    pass
+    return json.dumps(metadata).encode('utf-8')
 
 def _decode_metadata(metadata_str):
     """Decode a UTF-8 encoded JSON string to dict
@@ -78,7 +107,7 @@ def _decode_metadata(metadata_str):
     -------
     dict
     """
-    pass
+    return json.loads(metadata_str.decode('utf-8'))
 
 def _validate_dataframe(df):
     """Validate that the GeoDataFrame conforms to requirements for writing
@@ -92,7 +121,17 @@ def _validate_dataframe(df):
     ----------
     df : GeoDataFrame
     """
-    pass
+    if not isinstance(df, GeoDataFrame):
+        raise ValueError("'df' must be a GeoDataFrame")
+
+    if df.empty:
+        raise ValueError("Cannot write empty GeoDataFrame to Parquet")
+
+    if df.columns.inferred_type not in {"string", "unicode", "empty"}:
+        raise ValueError("Cannot write GeoDataFrame with non-string column names to Parquet")
+
+    if df.columns.has_duplicates:
+        raise ValueError("Cannot write GeoDataFrame with duplicate column names to Parquet")
 
 def _validate_geo_metadata(metadata):
     """Validate geo metadata.
@@ -104,7 +143,29 @@ def _validate_geo_metadata(metadata):
     ----------
     metadata : dict
     """
-    pass
+    if not metadata:
+        raise ValueError("Geo metadata cannot be empty")
+
+    required_keys = ['version', 'primary_column', 'columns']
+    for key in required_keys:
+        if key not in metadata:
+            raise ValueError(f"Geo metadata is missing required key: {key}")
+
+    if not isinstance(metadata['columns'], dict):
+        raise ValueError("'columns' in geo metadata must be a dictionary")
+
+    primary_column = metadata['primary_column']
+    if primary_column not in metadata['columns']:
+        raise ValueError(f"Primary column '{primary_column}' not found in columns metadata")
+
+    column_metadata = metadata['columns'][primary_column]
+    required_column_keys = ['encoding', 'geometry_types']
+    for key in required_column_keys:
+        if key not in column_metadata:
+            raise ValueError(f"Column metadata for '{primary_column}' is missing required key: {key}")
+
+    if column_metadata['encoding'] not in ['WKB', 'geoarrow']:
+        raise ValueError(f"Invalid encoding '{column_metadata['encoding']}' for column '{primary_column}'")
 
 def _geopandas_to_arrow(df, index=None, geometry_encoding='WKB', schema_version=None, write_covering_bbox=None):
     """
