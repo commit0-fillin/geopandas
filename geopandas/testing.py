@@ -8,7 +8,9 @@ from geopandas.array import GeometryDtype
 
 def _isna(this):
     """isna version that works for both scalars and (Geo)Series"""
-    pass
+    if isinstance(this, (pd.Series, pd.Index)):
+        return this.isna()
+    return pd.isna(this)
 
 def _geom_equals_mask(this, that):
     """
@@ -25,7 +27,11 @@ def _geom_equals_mask(this, that):
     Series
         boolean Series, True if geometries in left equal geometries in right
     """
-    pass
+    this_na = _isna(this)
+    that_na = _isna(that)
+    empty_eq = (this.is_empty & that.is_empty) | (this_na & that_na)
+    eq = this.equals(that)
+    return empty_eq | eq
 
 def geom_equals(this, that):
     """
@@ -42,7 +48,7 @@ def geom_equals(this, that):
     bool
         True if all geometries in left equal geometries in right
     """
-    pass
+    return _geom_equals_mask(this, that).all()
 
 def _geom_almost_equals_mask(this, that):
     """
@@ -61,7 +67,11 @@ def _geom_almost_equals_mask(this, that):
     Series
         boolean Series, True if geometries in left almost equal geometries in right
     """
-    pass
+    this_na = _isna(this)
+    that_na = _isna(that)
+    empty_eq = (this.is_empty & that.is_empty) | (this_na & that_na)
+    eq = this.geom_almost_equals(that)
+    return empty_eq | eq
 
 def geom_almost_equals(this, that):
     """
@@ -81,7 +91,7 @@ def geom_almost_equals(this, that):
     bool
         True if all geometries in left almost equal geometries in right
     """
-    pass
+    return _geom_almost_equals_mask(this, that).all()
 
 def assert_geoseries_equal(left, right, check_dtype=True, check_index_type=False, check_series_type=True, check_less_precise=False, check_geom_type=False, check_crs=True, normalize=False):
     """
@@ -111,11 +121,42 @@ def assert_geoseries_equal(left, right, check_dtype=True, check_index_type=False
         Typically useful with ``check_less_precise=True``, which uses
         ``geom_equals_exact`` and requires exact coordinate order.
     """
-    pass
+    from geopandas import GeoSeries
+
+    if check_series_type:
+        assert isinstance(left, GeoSeries)
+        assert isinstance(right, GeoSeries)
+        assert_series_equal(left, right, check_dtype=False, check_index_type=check_index_type, check_series_type=check_series_type, obj="GeoSeries")
+    else:
+        left = GeoSeries(left)
+        right = GeoSeries(right)
+        assert_series_equal(left, right, check_dtype=False, check_index_type=check_index_type, check_series_type=False, obj="GeoSeries")
+
+    if check_dtype:
+        assert left.dtype == right.dtype, "DTYPEs are not equal"
+
+    if check_geom_type:
+        assert (left.geom_type == right.geom_type).all(), "Geometry types are not all equal"
+
+    if check_crs:
+        assert left.crs == right.crs, "CRS are not equal"
+
+    if normalize:
+        left = left.normalize()
+        right = right.normalize()
+
+    if check_less_precise:
+        assert geom_almost_equals(left, right)
+    else:
+        assert geom_equals(left, right)
 
 def _truncated_string(geom):
     """Truncated WKT repr of geom"""
-    pass
+    if geom is None:
+        return 'None'
+    if hasattr(geom, '__geo_interface__'):
+        return str(geom)[:80]
+    return 'Geometry'
 
 def assert_geodataframe_equal(left, right, check_dtype=True, check_index_type='equiv', check_column_type='equiv', check_frame_type=True, check_like=False, check_less_precise=False, check_geom_type=False, check_crs=True, normalize=False):
     """
@@ -145,4 +186,36 @@ def assert_geodataframe_equal(left, right, check_dtype=True, check_index_type='e
         Typically useful with ``check_less_precise=True``, which uses
         ``geom_equals_exact`` and requires exact coordinate order.
     """
-    pass
+    from geopandas import GeoDataFrame
+
+    # Check that the type of the frames is identical
+    if check_frame_type:
+        assert isinstance(left, GeoDataFrame), "'left' is not a GeoDataFrame"
+        assert isinstance(right, GeoDataFrame), "'right' is not a GeoDataFrame"
+
+    # Check that the geometry column is identical
+    assert left._geometry_column_name == right._geometry_column_name, "Geometry column names are not equal"
+
+    # Check CRS
+    if check_crs:
+        assert left.crs == right.crs, "CRS are not equal"
+
+    # Normalize geometries if requested
+    if normalize:
+        left = left.copy()
+        right = right.copy()
+        left[left._geometry_column_name] = left.geometry.normalize()
+        right[right._geometry_column_name] = right.geometry.normalize()
+
+    # Check geometries
+    assert_geoseries_equal(left.geometry, right.geometry, check_dtype=check_dtype, check_less_precise=check_less_precise, check_geom_type=check_geom_type, normalize=False)
+
+    # Check the rest of the DataFrame
+    assert_frame_equal(left.drop(columns=[left._geometry_column_name]),
+                       right.drop(columns=[right._geometry_column_name]),
+                       check_dtype=check_dtype,
+                       check_index_type=check_index_type,
+                       check_column_type=check_column_type,
+                       check_frame_type=False,
+                       check_like=check_like,
+                       obj="GeoDataFrame")
