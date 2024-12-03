@@ -39,7 +39,7 @@ class SpatialIndex:
         >>> s.sindex.valid_query_predicates  # doctest: +SKIP
         {None, "contains", "contains_properly", "covered_by", "covers", "crosses", "dwithin", "intersects", "overlaps", "touches", "within"}
         """
-        pass
+        return PREDICATES
 
     def query(self, geometry, predicate=None, sort=False, distance=None, output_format='tuple'):
         """
@@ -163,7 +163,26 @@ class SpatialIndex:
         geometries that can be joined based on overlapping bounding boxes or
         optional predicate are returned.
         """
-        pass
+        if predicate not in self.valid_query_predicates:
+            raise ValueError(f"Predicate '{predicate}' is not valid. "
+                             f"Valid predicates are: {self.valid_query_predicates}")
+
+        geometry = self._as_geometry_array(geometry)
+
+        if predicate == 'dwithin' and distance is None:
+            raise ValueError("Distance is required for 'dwithin' predicate")
+
+        result = self._tree.query(geometry, predicate, distance)
+
+        if sort:
+            result = np.sort(result, axis=1)
+
+        if output_format == 'tuple':
+            return tuple(result)
+        elif output_format == 'array':
+            return result
+        else:
+            raise ValueError("Invalid output_format. Use 'tuple' or 'array'.")
 
     @staticmethod
     def _as_geometry_array(geometry):
@@ -180,7 +199,14 @@ class SpatialIndex:
         np.ndarray
             A numpy array of Shapely geometries.
         """
-        pass
+        if isinstance(geometry, (shapely.geometry.base.BaseGeometry, shapely.geometry.base.BaseMultipartGeometry)):
+            return np.array([geometry])
+        elif isinstance(geometry, (geopandas.GeoSeries, geopandas.array.GeometryArray)):
+            return geometry.values
+        elif isinstance(geometry, np.ndarray) and geometry.dtype == object:
+            return geometry
+        else:
+            return np.array(geometry)
 
     def nearest(self, geometry, return_all=True, max_distance=None, return_distance=False, exclusive=False):
         """
@@ -261,7 +287,14 @@ class SpatialIndex:
         array([[0, 1],
                [8, 9]])
         """
-        pass
+        geometry = self._as_geometry_array(geometry)
+        result = self._tree.nearest(geometry, return_all, max_distance, return_distance, exclusive)
+        
+        if return_distance:
+            indices, distances = result
+            return indices, distances
+        else:
+            return result
 
     def intersection(self, coordinates):
         """Compatibility wrapper for rtree.index.Index.intersection,
@@ -299,7 +332,19 @@ class SpatialIndex:
         array([1, 2, 3])
 
         """
-        pass
+        warnings.warn(
+            "The 'intersection' method is deprecated. Use 'query' instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        if len(coordinates) == 2:
+            # Point query
+            return self.query(shapely.geometry.Point(coordinates))
+        elif len(coordinates) == 4:
+            # Rectangle query
+            return self.query(shapely.geometry.box(*coordinates))
+        else:
+            raise ValueError("Invalid coordinates. Must be (x, y) for point or (minx, miny, maxx, maxy) for rectangle.")
 
     @property
     def size(self):
@@ -327,7 +372,7 @@ class SpatialIndex:
         >>> s.sindex.size
         10
         """
-        pass
+        return len(self._tree)
 
     @property
     def is_empty(self):
@@ -357,7 +402,7 @@ class SpatialIndex:
         >>> s2.sindex.is_empty
         True
         """
-        pass
+        return self.size == 0
 
     def __len__(self):
         return len(self._tree)
